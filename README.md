@@ -359,10 +359,108 @@ from . import pick_place_redblock_g1_29dof_dex3
 __all__ = ["pick_place_cylinder_g1_29dof_dex3", "pick_place_cylinder_g1_29dof_dex1", "pick_place_redblock_g1_29dof_dex1", "pick_place_redblock_g1_29dof_dex3"]
 
 ```
+## 4、🧭 Navigation System (NEW)
+
+This project now includes a complete navigation system for SLAM and autonomous navigation, designed for both simulation and real robot deployment on the Jetson Orin NX.
+
+### 4.1 Navigation Tasks
+
+| Task Name | Description |
+|-----------|-------------|
+| `Isaac-Navigation-G129-Wholebody` | Navigation in warehouse scene |
+| `Isaac-Navigation-G129-Wholebody-Obstacles` | Navigation with additional obstacles |
+
+### 4.2 Quick Start (Docker - Recommended)
+
+```bash
+cd docker
+
+# Build images (first time only)
+docker build -t unitree-sim:latest -f ../Dockerfile ..
+docker build -t g1-navigation:x86 -f Dockerfile.navigation.x86 ..
+
+# Run simulation + navigation stack
+./run_simulation.sh --all
+
+# Teleop in another terminal
+docker exec -it g1-simulation bash -c \
+    'cd /home/code/unitree_sim_isaaclab && python send_commands_keyboard.py'
+
+# Stop all
+./run_simulation.sh --down
+```
+
+### 4.3 Quick Start (Without Docker)
+
+```bash
+# Terminal 1: Launch simulation
+python sim_main.py --task Isaac-Navigation-G129-Wholebody \
+    --robot_type g129 --enable_wholebody_dds
+
+# Terminal 2: Start DDS-ROS2 bridge (requires ROS2 Humble)
+python -m navigation.dds_ros2_bridge
+
+# Terminal 3: Teleoperate to test
+python send_commands_keyboard.py
+```
+
+### 4.4 Real Robot (Jetson Orin)
+
+```bash
+# On the Jetson inside the G1:
+cd docker
+
+# Build image (first time, ~40 min on Jetson)
+docker build -t g1-navigation:jetson -f Dockerfile.navigation.jetson ..
+
+# Run navigation
+./run_robot.sh --isaac    # Isaac ROS (GPU-accelerated)
+./run_robot.sh --nav2     # Add autonomous navigation
+
+# Stop
+./run_robot.sh --down
+```
+
+### 4.5 Full Navigation Stack
+
+For autonomous navigation with SLAM and Nav2, see the comprehensive guide:
+**[Navigation Setup Guide](doc/NAVIGATION_SETUP.md)**
+
+Features:
+- **GPU-accelerated Visual SLAM** (isaac_ros_visual_slam)
+- **GPU-accelerated 3D mapping** (isaac_ros_nvblox)
+- **Nav2 integration** with MPPI controller tuned for humanoid locomotion
+- **Sim-to-real transfer** - same code works on real G1 with Jetson Orin
+
+### 4.6 Navigation Components
+
+```
+navigation/
+├── __init__.py                    # Module initialization
+├── dds_ros2_bridge.py            # DDS ↔ ROS2 communication bridge
+├── config/
+│   ├── g1_nav_params.yaml        # Nav2 parameters for G1
+│   ├── nvblox_params.yaml        # 3D mapping parameters
+│   └── vslam_params.yaml         # Visual SLAM parameters
+└── launch/
+    ├── nav2_bringup.launch.py    # Nav2 launch file
+    └── isaac_ros_navigation.launch.py  # Full stack launch
+
+docker/
+├── Dockerfile.navigation.x86     # Navigation container (workstation)
+├── Dockerfile.navigation.jetson  # Navigation container (Jetson Orin)
+├── docker-compose.yml            # Simulation orchestration
+├── docker-compose.jetson.yml     # Real robot orchestration
+├── run_simulation.sh             # Simulation launcher script
+└── run_robot.sh                  # Real robot launcher script
+```
+
 ### 📋 TODO List
 
 - ⬜ Continue adding new task scenes
-- ⬜ Continue code optimization 
+- ⬜ Continue code optimization
+- ⬜ Add lidar sensor support for navigation
+- ⬜ Add waypoint following examples 
 
 ## 🙏 Acknowledgement
 

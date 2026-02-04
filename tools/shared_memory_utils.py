@@ -22,6 +22,7 @@ def get_shm_name(image_name: str) -> str:
     return f"isaac_{image_name}_image_shm"
 
 SHM_SIZE_PER_IMAGE = 640 * 480 * 3 + 128  # ~1MB per image + header + buffer
+SHM_SIZE_DEPTH = 640 * 480 * 4 + 128  # ~1.2MB for depth (float32) + header
 
 # Backward compatibility
 SHM_NAME = "isaac_multi_image_shm"  # Kept for backward compatibility
@@ -397,6 +398,169 @@ class MultiImageReader:
         self.shms.clear()
         self.buffer.clear()
         self.last_timestamps.clear()
+
+
+# ==============================================================================
+# Depth Image Shared Memory Classes
+# ==============================================================================
+
+class DepthImageHeader(ctypes.LittleEndianStructure):
+    """Header structure for depth images (float32 or uint16)"""
+    _fields_ = [
+        ('timestamp', ctypes.c_uint64),    # timestamp in ms
+        ('height', ctypes.c_uint32),       # image height
+        ('width', ctypes.c_uint32),        # image width
+        ('dtype', ctypes.c_uint32),        # 0=float32, 1=uint16
+        ('data_size', ctypes.c_uint32),    # data size in bytes
+    ]
+
+
+class DepthImageWriter:
+    """Writer for depth images to shared memory"""
+    
+    def __init__(self):
+        self._min_interval_sec = 1.0 / 30.0  # 30 FPS max for depth
+        self._last_write_ts_ms = 0
+        self.shm = None
+        self.shm_name = "isaac_depth_image_shm"
+        
+    def write_depth(self, depth: np.ndarray) -> bool:
+        """Write depth image to shared memory
+        
+        Args:
+            depth: Depth image as float32 (meters) or uint16 (mm)
+            
+        Returns:
+            bool: Success
+        """
+        if depth is None or depth.size == 0:
+            return False
+            
+        now_ms = int(time.time() * 1000)
+        if self._last_write_ts_ms and (now_ms - self._last_write_ts_ms) < int(self._min_interval_sec * 1000):
+            return True
+            
+        try:
+            # Ensure contiguous
+            if not depth.flags['C_CONTIGUOUS']:
+                depth = np.ascontiguousarray(depth)
+            
+            # Create shared memory if needed
+            if self.shm is None:
+                try:
+                    self.shm = shared_memory.SharedMemory(name=self.shm_name)
+                except FileNotFoundError:
+                    self.shm = shared_memory.SharedMemory(create=True, size=SHM_SIZE_DEPTH, name=self.shm_name)
+            
+            # Prepare header
+            header = DepthImageHeader()
+            header.timestamp = now_ms
+            header.height = depth.shape[0]
+            header.width = depth.shape[1]
+            
+            if depth.dtype == np.float32:
+                header.dtype = 0
+                data_bytes = depth.tobytes()
+            elif depth.dtype == np.uint16:
+                header.dtype = 1
+                data_bytes = depth.tobytes()
+            else:
+                # Convert to float32
+                depth = depth.astype(np.float32)
+                header.dtype = 0
+                data_bytes = depth.tobytes()
+            
+            header.data_size = len(data_bytes)
+            
+            # Check size
+            header_size = ctypes.sizeof(DepthImageHeader)
+            total_size = header_size + header.data_size
+            if total_size > self.shm.size:
+                print(f"[DepthImageWriter] Not enough space: need {total_size}, have {self.shm.size}")
+                return False
+            
+            # Write header
+            header_bytes = ctypes.string_at(ctypes.byref(header), header_size)
+            self.shm.buf[0:header_size] = header_bytes
+            
+            # Write data
+            self.shm.buf[header_size:header_size + header.data_size] = data_bytes
+            
+            self._last_write_ts_ms = now_ms
+            return True
+            
+        except Exception as e:
+            print(f"[DepthImageWriter] Error: {e}")
+            return False
+    
+    def close(self):
+        if self.shm:
+            try:
+                self.shm.close()
+            except:
+                pass
+            self.shm = None
+
+
+class DepthImageReader:
+    """Reader for depth images from shared memory"""
+    
+    def __init__(self):
+        self.shm = None
+        self.shm_name = "isaac_depth_image_shm"
+        self.last_timestamp = 0
+        self.buffer = None
+        
+    def read_depth(self) -> Optional[np.ndarray]:
+        """Read depth image from shared memory
+        
+        Returns:
+            np.ndarray: Depth image as float32 (meters), or None if no new data
+        """
+        try:
+            # Open shared memory
+            if self.shm is None:
+                try:
+                    self.shm = shared_memory.SharedMemory(name=self.shm_name)
+                except FileNotFoundError:
+                    return None
+            
+            header_size = ctypes.sizeof(DepthImageHeader)
+            header_data = bytes(self.shm.buf[:header_size])
+            header = DepthImageHeader.from_buffer_copy(header_data)
+            
+            # Check timestamp
+            if header.timestamp <= self.last_timestamp:
+                return self.buffer
+            
+            # Read data
+            data_start = header_size
+            data_end = data_start + header.data_size
+            payload = bytes(self.shm.buf[data_start:data_end])
+            
+            # Decode
+            if header.dtype == 0:  # float32
+                depth = np.frombuffer(payload, dtype=np.float32)
+            else:  # uint16
+                depth = np.frombuffer(payload, dtype=np.uint16).astype(np.float32) / 1000.0  # mm to m
+            
+            depth = depth.reshape(header.height, header.width)
+            
+            self.buffer = depth
+            self.last_timestamp = header.timestamp
+            return depth
+            
+        except Exception as e:
+            print(f"[DepthImageReader] Error: {e}")
+            return None
+    
+    def close(self):
+        if self.shm:
+            try:
+                self.shm.close()
+            except:
+                pass
+            self.shm = None
 
 
 # backward compatible class (single image)

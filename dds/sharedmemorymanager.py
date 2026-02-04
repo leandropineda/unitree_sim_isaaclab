@@ -24,8 +24,9 @@ class SharedMemoryManager:
                 self.shm_name = name
                 self.created = False
             except FileNotFoundError:
-                self.shm = shared_memory.SharedMemory(create=True, size=size)
-                self.shm_name = self.shm.name
+                # Create new shared memory WITH the specified name
+                self.shm = shared_memory.SharedMemory(name=name, create=True, size=size)
+                self.shm_name = name
                 self.created = True
         else:
             self.shm = shared_memory.SharedMemory(create=True, size=size)

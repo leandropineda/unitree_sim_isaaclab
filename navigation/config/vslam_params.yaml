@@ -1,0 +1,136 @@
+# =============================================================================
+# Isaac ROS Visual SLAM Parameters for G1 Navigation
+# =============================================================================
+#
+# Isaac ROS Visual SLAM provides GPU-accelerated visual odometry using:
+# - Stereo or RGB-D camera input
+# - Feature tracking for 6-DoF pose estimation
+# - Loop closure detection
+# - Map saving/loading
+#
+# This is designed for:
+# - Jetson Orin NX (100 TOPS GPU acceleration)
+# - Intel RealSense D435 depth camera
+# - Indoor warehouse navigation
+#
+# Documentation:
+#   https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_visual_slam/
+#
+# =============================================================================
+
+visual_slam_node:
+  ros__parameters:
+    # ==========================================================================
+    # General Settings
+    # ==========================================================================
+    use_sim_time: True  # Set to False for real robot
+    
+    # Coordinate frames
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_link"
+    
+    # Enable/disable features
+    enable_localization_n_mapping: True
+    enable_imu_fusion: False  # Enable if IMU data is available
+    
+    # ==========================================================================
+    # Camera Configuration
+    # ==========================================================================
+    # Input topics (Intel RealSense D435)
+    
+    # For stereo mode (if using stereo cameras)
+    image_left_topic: "/camera/infra1/image_rect_raw"
+    image_right_topic: "/camera/infra2/image_rect_raw"
+    camera_info_left_topic: "/camera/infra1/camera_info"
+    camera_info_right_topic: "/camera/infra2/camera_info"
+    
+    # For RGB-D mode
+    input_left_camera_frame: "camera_depth_optical_frame"
+    input_right_camera_frame: "camera_depth_optical_frame"
+    
+    # ==========================================================================
+    # Visual Odometry Settings
+    # ==========================================================================
+    
+    # Feature detection parameters
+    num_cameras: 2  # Stereo pair
+    rectified_images: True
+    
+    # Tracking quality
+    enable_observations_view: True
+    enable_landmarks_view: True
+    
+    # Image preprocessing
+    image_jitter_threshold_ms: 34.0  # Accept ~30fps timing jitter
+    
+    # ==========================================================================
+    # Localization Settings
+    # ==========================================================================
+    
+    # Loop closure detection
+    enable_slam_visualization: True
+    enable_loop_closure: True
+    
+    # Localization mode (can switch between SLAM and localization-only)
+    localization_mode: False  # False = full SLAM, True = localization only
+    
+    # ==========================================================================
+    # Map Management
+    # ==========================================================================
+    
+    # Map save/load paths
+    map_path: "/tmp/vslam_map"
+    
+    # Automatic map saving
+    save_map_on_shutdown: True
+    
+    # ==========================================================================
+    # Output Configuration
+    # ==========================================================================
+    
+    # Published transforms
+    publish_map_to_odom_tf: True
+    publish_odom_to_base_tf: True
+    invert_odom_to_base_tf: False
+    
+    # Odometry output
+    odom_topic: "/visual_slam/tracking/odometry"
+    slam_status_topic: "/visual_slam/tracking/slam_status"
+    
+    # ==========================================================================
+    # Performance Tuning for Jetson Orin
+    # ==========================================================================
+    
+    # Processing rate (match camera framerate)
+    target_fps: 30
+    
+    # GPU acceleration settings
+    # Visual SLAM uses GPU for feature detection and matching
+    # On Orin NX, this runs very efficiently
+    
+    # Image resolution handling
+    # D435 default is 640x480, which is good for VSLAM
+    image_height: 480
+    image_width: 640
+    
+    # ==========================================================================
+    # Coordinate System
+    # ==========================================================================
+    
+    # Gravity alignment
+    enable_ground_constraint_in_odometry: False
+    enable_imu_fusion: False
+    
+    # ==========================================================================
+    # Debugging and Visualization
+    # ==========================================================================
+    
+    # Enable debug output
+    verbosity: 0  # 0=info, 1=debug, 2=verbose
+    
+    # Visualization markers
+    path_max_size: 1000
+    
+    # Performance monitoring
+    enable_timing: False

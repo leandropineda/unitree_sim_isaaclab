@@ -1,0 +1,171 @@
+# =============================================================================
+# Dockerfile for G1 Navigation Stack
+# =============================================================================
+#
+# This container provides the ROS2 navigation stack for the Unitree G1:
+# - ROS2 Humble
+# - Nav2 (navigation stack)
+# - Isaac ROS Visual SLAM (GPU-accelerated)
+# - Isaac ROS nvblox (GPU-accelerated 3D mapping)
+# - DDS-ROS2 bridge
+#
+# Build targets:
+# - x86_64 (workstation): For simulation
+# - aarch64 (Jetson): For real robot
+#
+# Usage:
+#   # Build for workstation (x86_64)
+#   docker build -f docker/Dockerfile.navigation -t g1-navigation:latest .
+#
+#   # Build for Jetson (aarch64) - run ON the Jetson
+#   docker build -f docker/Dockerfile.navigation -t g1-navigation:jetson .
+#
+# =============================================================================
+
+# =============================================================================
+# Stage 1: Base ROS2 Humble + CUDA
+# =============================================================================
+ARG BASE_IMAGE=nvcr.io/nvidia/isaac/ros:aarch64-ros2_humble-nav2_d7f9e2e0be408dd37da74d34eb14578f
+
+# For x86_64 workstations, use:
+# ARG BASE_IMAGE=ros:humble-ros-base-jammy
+
+FROM ${BASE_IMAGE} as base
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set up locale
+RUN apt-get update && apt-get install -y locales && \
+    locale-gen en_US en_US.UTF-8 && \
+    update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+ENV LANG=en_US.UTF-8
+
+# Install system tools
+RUN apt-get update && apt-get install -y \
+    htop \
+    tmux \
+    vim \
+    nano \
+    tree \
+    net-tools \
+    iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Stage 2: Install ROS2 packages
+# =============================================================================
+FROM base as ros2-packages
+
+# Install ROS2 Nav2 and dependencies
+RUN apt-get update && apt-get install -y \
+    # Nav2 packages
+    ros-humble-nav2-bringup \
+    ros-humble-nav2-bt-navigator \
+    ros-humble-nav2-controller \
+    ros-humble-nav2-planner \
+    ros-humble-nav2-behaviors \
+    ros-humble-nav2-costmap-2d \
+    ros-humble-nav2-lifecycle-manager \
+    ros-humble-nav2-map-server \
+    ros-humble-nav2-mppi-controller \
+    # SLAM
+    ros-humble-slam-toolbox \
+    # TF and transforms
+    ros-humble-tf2-ros \
+    ros-humble-tf2-tools \
+    # Visualization
+    ros-humble-rviz2 \
+    ros-humble-rviz-common \
+    ros-humble-rviz-default-plugins \
+    # Image processing
+    ros-humble-image-transport \
+    ros-humble-cv-bridge \
+    # RealSense (for real robot)
+    ros-humble-realsense2-camera \
+    ros-humble-realsense2-description \
+    # DDS middleware
+    ros-humble-rmw-cyclonedds-cpp \
+    # Python tools
+    python3-pip \
+    python3-colcon-common-extensions \
+    # Build tools
+    build-essential \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set CycloneDDS as default RMW
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# =============================================================================
+# Stage 3: Install Python dependencies
+# =============================================================================
+FROM ros2-packages as python-deps
+
+# Install Python packages
+RUN pip3 install --no-cache-dir \
+    numpy \
+    pynput \
+    pyzmq
+
+# Install Unitree SDK2 Python
+RUN pip3 install --no-cache-dir unitree_sdk2py
+
+# =============================================================================
+# Stage 4: Install Isaac ROS packages (GPU-accelerated)
+# =============================================================================
+FROM python-deps as isaac-ros
+
+# Note: Isaac ROS packages are pre-installed in NVIDIA's Isaac ROS base image
+# For custom builds, you would need to:
+# 1. Add Isaac ROS apt repository
+# 2. Install isaac_ros_visual_slam, isaac_ros_nvblox, etc.
+
+# If not using NVIDIA's Isaac ROS image, uncomment these:
+# RUN apt-get update && apt-get install -y \
+#     ros-humble-isaac-ros-visual-slam \
+#     ros-humble-isaac-ros-nvblox \
+#     && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Stage 5: Copy navigation package
+# =============================================================================
+FROM isaac-ros as final
+
+# Create workspace
+WORKDIR /ros2_ws/src/g1_navigation
+
+# Copy navigation module
+COPY navigation/ ./navigation/
+COPY requirements.txt ./
+
+# Copy configuration files
+RUN mkdir -p /ros2_ws/src/g1_navigation/config && \
+    mkdir -p /ros2_ws/src/g1_navigation/launch
+
+# Install navigation package dependencies
+RUN pip3 install --no-cache-dir -r requirements.txt || true
+
+# Build ROS2 workspace (if there's a package.xml)
+WORKDIR /ros2_ws
+RUN . /opt/ros/humble/setup.sh && \
+    colcon build --symlink-install || true
+
+# =============================================================================
+# Environment setup
+# =============================================================================
+
+# Source ROS2 and workspace
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "source /ros2_ws/install/setup.bash 2>/dev/null || true" >> /root/.bashrc && \
+    echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" >> /root/.bashrc
+
+# Set default ROS_DOMAIN_ID (can be overridden at runtime)
+ENV ROS_DOMAIN_ID=0
+
+# Working directory
+WORKDIR /ros2_ws/src/g1_navigation
+
+# Default command: start the DDS-ROS2 bridge
+CMD ["bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m navigation.dds_ros2_bridge"]

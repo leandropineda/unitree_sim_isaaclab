@@ -1,0 +1,122 @@
+# =============================================================================
+# Dockerfile for G1 Navigation Stack (x86_64 / Workstation)
+# =============================================================================
+#
+# This is the x86_64 version for running with Isaac Lab simulation.
+# For Jetson (aarch64), use Dockerfile.navigation.jetson
+#
+# Usage:
+#   docker build -f docker/Dockerfile.navigation.x86 -t g1-navigation:x86 .
+#
+# =============================================================================
+
+FROM ros:humble-ros-base-jammy
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# =============================================================================
+# Install system tools and NVIDIA container support
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    # System utilities
+    htop \
+    tmux \
+    vim \
+    nano \
+    tree \
+    net-tools \
+    iputils-ping \
+    # Build dependencies
+    software-properties-common \
+    wget \
+    curl \
+    gnupg2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install ROS2 Nav2 and dependencies
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    # Nav2 packages
+    ros-humble-nav2-bringup \
+    ros-humble-nav2-bt-navigator \
+    ros-humble-nav2-controller \
+    ros-humble-nav2-planner \
+    ros-humble-nav2-behaviors \
+    ros-humble-nav2-costmap-2d \
+    ros-humble-nav2-lifecycle-manager \
+    ros-humble-nav2-map-server \
+    ros-humble-nav2-mppi-controller \
+    ros-humble-nav2-amcl \
+    # SLAM
+    ros-humble-slam-toolbox \
+    # TF and transforms
+    ros-humble-tf2-ros \
+    ros-humble-tf2-tools \
+    # Visualization
+    ros-humble-rviz2 \
+    ros-humble-rviz-common \
+    ros-humble-rviz-default-plugins \
+    # Image processing
+    ros-humble-image-transport \
+    ros-humble-cv-bridge \
+    ros-humble-image-view \
+    ros-humble-pointcloud-to-laserscan \
+    # DDS middleware
+    ros-humble-rmw-cyclonedds-cpp \
+    # Python tools
+    python3-pip \
+    python3-colcon-common-extensions \
+    # Build tools
+    build-essential \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set CycloneDDS as default RMW (matches Unitree SDK)
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# =============================================================================
+# Install Python dependencies
+# =============================================================================
+RUN pip3 install --no-cache-dir \
+    numpy \
+    pynput \
+    pyzmq \
+    cyclonedds
+
+# Install Unitree SDK2 Python
+# Note: Install cyclonedds first (required dependency)
+# Use editable install (-e) to avoid circular import bug
+RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/unitree_sdk2_python && \
+    cd /opt/unitree_sdk2_python && \
+    pip3 install --no-cache-dir -e . && \
+    python3 -c "from unitree_sdk2py.core.channel import ChannelPublisher; print('unitree_sdk2py installed successfully')"
+
+# =============================================================================
+# Copy navigation package
+# =============================================================================
+WORKDIR /ros2_ws/src/g1_navigation
+
+# Copy navigation module and configs
+COPY navigation/ ./navigation/
+COPY requirements.txt ./
+
+# Install any additional requirements
+RUN pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+
+# =============================================================================
+# Environment setup
+# =============================================================================
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" >> /root/.bashrc
+
+ENV ROS_DOMAIN_ID=0
+ENV PYTHONPATH=/ros2_ws/src/g1_navigation:${PYTHONPATH:-}
+
+WORKDIR /ros2_ws/src/g1_navigation
+
+# Default: start DDS-ROS2 bridge
+CMD ["bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m navigation.dds_ros2_bridge"]
