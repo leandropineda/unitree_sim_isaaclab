@@ -1,0 +1,296 @@
+# =============================================================================
+# Docker Compose for G1 Navigation (Real Robot - Jetson Orin)
+# =============================================================================
+#
+# This docker-compose file runs the navigation stack on the real G1 robot.
+# It connects to:
+# - Real G1 robot via Unitree DDS
+# - Intel RealSense D435 camera
+# - GPU-accelerated SLAM and mapping
+#
+# Usage:
+#   # On the Jetson Orin (inside the G1 robot):
+#   docker compose -f docker-compose.jetson.yml up
+#
+#   # With visualization
+#   docker compose -f docker-compose.jetson.yml --profile viz up
+#
+# Prerequisites:
+# - JetPack 6.0+
+# - NVIDIA Container Runtime configured
+# - RealSense camera connected
+# - G1 robot powered on and running
+#
+# =============================================================================
+
+version: "3.8"
+
+services:
+  # ===========================================================================
+  # DDS-ROS2 Bridge (connects to real robot)
+  # ===========================================================================
+  bridge:
+    image: g1-navigation:jetson
+    container_name: g1-bridge
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.navigation.jetson
+    
+    # Full GPU access for Jetson
+    runtime: nvidia
+    
+    # Host network for DDS communication with robot
+    network_mode: host
+    
+    environment:
+      - DISPLAY=${DISPLAY}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+      # Real robot - use wall clock time
+      - ROS_USE_SIM_TIME=false
+    
+    volumes:
+      # Navigation configs
+      - ../navigation/config:/ros2_ws/src/g1_navigation/navigation/config:ro
+    
+    # Start bridge
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting DDS-ROS2 bridge for real robot...' &&
+        python3 -m navigation.dds_ros2_bridge
+      "
+    
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # ===========================================================================
+  # RealSense Camera Driver
+  # ===========================================================================
+  realsense:
+    image: g1-navigation:jetson
+    container_name: g1-realsense
+    
+    runtime: nvidia
+    network_mode: host
+    privileged: true  # Required for USB camera access
+    
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    
+    # USB device access for camera
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    
+    volumes:
+      - /dev:/dev
+    
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting RealSense camera...' &&
+        ros2 launch realsense2_camera rs_launch.py \
+          enable_depth:=true \
+          enable_color:=true \
+          enable_infra1:=true \
+          enable_infra2:=true \
+          pointcloud.enable:=true \
+          depth_module.profile:=640x480x30 \
+          rgb_camera.profile:=640x480x30
+      "
+    
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Isaac ROS Visual SLAM (GPU-accelerated)
+  # ===========================================================================
+  vslam:
+    image: g1-navigation:jetson
+    container_name: g1-vslam
+    
+    runtime: nvidia
+    network_mode: host
+    
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../navigation/config:/ros2_ws/src/g1_navigation/navigation/config:ro
+      - ../navigation/launch:/ros2_ws/src/g1_navigation/navigation/launch:ro
+      - ./maps:/ros2_ws/maps
+    
+    depends_on:
+      - realsense
+    
+    # Start Visual SLAM
+    # Note: Requires isaac_ros_visual_slam package
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Waiting for camera...' &&
+        sleep 5 &&
+        ros2 launch isaac_ros_visual_slam isaac_ros_visual_slam.launch.py \
+          enable_localization_n_mapping:=True \
+          enable_imu_fusion:=False
+      "
+    
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    
+    # Optional - enable only when Isaac ROS is available
+    profiles:
+      - isaac
+
+  # ===========================================================================
+  # Isaac ROS nvblox (GPU-accelerated 3D mapping)
+  # ===========================================================================
+  nvblox:
+    image: g1-navigation:jetson
+    container_name: g1-nvblox
+    
+    runtime: nvidia
+    network_mode: host
+    
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    
+    volumes:
+      - ../navigation/config:/ros2_ws/src/g1_navigation/navigation/config:ro
+    
+    depends_on:
+      - realsense
+    
+    # Start nvblox
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Waiting for camera...' &&
+        sleep 5 &&
+        ros2 launch isaac_ros_nvblox nvblox_nav2.launch.py
+      "
+    
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    
+    profiles:
+      - isaac
+
+  # ===========================================================================
+  # SLAM Toolbox (CPU fallback if Isaac ROS not available)
+  # ===========================================================================
+  slam:
+    image: g1-navigation:jetson
+    container_name: g1-slam
+    
+    runtime: nvidia
+    network_mode: host
+    
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    
+    volumes:
+      - ./maps:/ros2_ws/maps
+    
+    depends_on:
+      - bridge
+      - realsense
+    
+    # SLAM Toolbox (CPU-based, works without Isaac ROS)
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        sleep 8 &&
+        ros2 launch slam_toolbox online_async_launch.py \
+          use_sim_time:=False
+      "
+    
+    stdin_open: true
+    tty: true
+    
+    profiles:
+      - slam
+
+  # ===========================================================================
+  # Nav2 (Path Planning and Control)
+  # ===========================================================================
+  nav2:
+    image: g1-navigation:jetson
+    container_name: g1-nav2
+    
+    runtime: nvidia
+    network_mode: host
+    
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    
+    volumes:
+      - ../navigation/config:/ros2_ws/src/g1_navigation/navigation/config:ro
+      - ./maps:/ros2_ws/maps
+    
+    depends_on:
+      - bridge
+    
+    # Start Nav2
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Waiting for odometry...' &&
+        sleep 10 &&
+        ros2 launch /ros2_ws/src/g1_navigation/navigation/launch/nav2_bringup.launch.py \
+          use_sim_time:=False \
+          use_rviz:=True \
+          rviz_config:=/ros2_ws/src/g1_navigation/navigation/config/g1_navigation.rviz \
+          pointcloud_topic:=/camera/depth/color/points \
+          params_file:=/ros2_ws/src/g1_navigation/navigation/config/g1_nav_params.yaml \
+          map:=/ros2_ws/maps/warehouse_map.yaml
+      "
+    
+    stdin_open: true
+    tty: true
+    
+    profiles:
+      - nav2
+
+  # ===========================================================================
+  # RViz (Visualization - optional, for debugging)
+  # ===========================================================================
+  rviz:
+    image: g1-navigation:jetson
+    container_name: g1-rviz
+    
+    runtime: nvidia
+    network_mode: host
+    
+    environment:
+      - DISPLAY=${DISPLAY}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+    
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./maps:/ros2_ws/maps
+    
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        ros2 run rviz2 rviz2
+      "
+    
+    stdin_open: true
+    tty: true
+    
+    profiles:
+      - viz

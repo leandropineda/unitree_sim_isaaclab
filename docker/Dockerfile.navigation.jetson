@@ -1,0 +1,122 @@
+# =============================================================================
+# Dockerfile for G1 Navigation Stack (Jetson Orin / aarch64)
+# =============================================================================
+#
+# This image is optimized for the Jetson Orin NX with:
+# - GPU-accelerated Isaac ROS Visual SLAM
+# - GPU-accelerated Isaac ROS nvblox
+# - Nav2 with MPPI controller
+#
+# Build ON the Jetson:
+#   docker build -f docker/Dockerfile.navigation.jetson -t g1-navigation:jetson .
+#
+# Requirements:
+# - JetPack 6.0+
+# - NVIDIA Container Runtime
+#
+# =============================================================================
+
+# Use NVIDIA's Isaac ROS base image for Jetson
+# This includes pre-built Isaac ROS packages optimized for Jetson GPU
+FROM nvcr.io/nvidia/isaac/ros:humble-nav2_aarch64
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-c"]
+
+# =============================================================================
+# Install system tools
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    htop \
+    tmux \
+    vim \
+    nano \
+    tree \
+    net-tools \
+    iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install additional ROS2 packages
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    # Additional Nav2 packages
+    ros-humble-nav2-mppi-controller \
+    # SLAM (CPU fallback if Isaac ROS VSLAM not available)
+    ros-humble-slam-toolbox \
+    # RealSense camera support
+    ros-humble-realsense2-camera \
+    ros-humble-realsense2-description \
+    # Visualization
+    ros-humble-rviz2 \
+    ros-humble-rviz-common \
+    ros-humble-rviz-default-plugins \
+    # PointCloud -> LaserScan conversion
+    ros-humble-pointcloud-to-laserscan \
+    # DDS middleware (matches Unitree SDK)
+    ros-humble-rmw-cyclonedds-cpp \
+    # Python tools
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set CycloneDDS as default RMW
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+
+# =============================================================================
+# Install Isaac ROS packages (if not in base image)
+# =============================================================================
+# Note: These should be in the NVIDIA Isaac ROS base image
+# Uncomment if needed:
+#
+# RUN apt-get update && apt-get install -y \
+#     ros-humble-isaac-ros-visual-slam \
+#     ros-humble-isaac-ros-nvblox \
+#     && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# Install Python dependencies
+# =============================================================================
+RUN pip3 install --no-cache-dir \
+    numpy \
+    pynput \
+    pyzmq \
+    cyclonedds
+
+# Install Unitree SDK2 Python
+# Note: cyclonedds must be installed first (required dependency)
+# Use editable install (-e) to avoid circular import bug
+RUN git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/unitree_sdk2_python && \
+    cd /opt/unitree_sdk2_python && \
+    pip3 install --no-cache-dir -e . && \
+    python3 -c "from unitree_sdk2py.core.channel import ChannelPublisher; print('unitree_sdk2py installed successfully')"
+
+# =============================================================================
+# Copy navigation package
+# =============================================================================
+WORKDIR /ros2_ws/src/g1_navigation
+
+COPY navigation/ ./navigation/
+COPY requirements.txt ./
+
+RUN pip3 install --no-cache-dir -r requirements.txt 2>/dev/null || true
+
+# =============================================================================
+# Environment setup
+# =============================================================================
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" >> /root/.bashrc
+
+# Jetson-specific: enable max performance
+RUN echo "# Run 'sudo jetson_clocks' for max performance" >> /root/.bashrc
+
+ENV ROS_DOMAIN_ID=0
+ENV PYTHONPATH=/ros2_ws/src/g1_navigation:$PYTHONPATH
+
+# For GUI apps (RViz)
+ENV QT_X11_NO_MITSHM=1
+
+WORKDIR /ros2_ws/src/g1_navigation
+
+# Default: start DDS-ROS2 bridge
+CMD ["bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m navigation.dds_ros2_bridge"]

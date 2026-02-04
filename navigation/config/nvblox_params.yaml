@@ -1,0 +1,121 @@
+# =============================================================================
+# Isaac ROS nvblox Parameters for G1 Navigation
+# =============================================================================
+#
+# nvblox is a GPU-accelerated 3D mapping library that:
+# - Creates TSDF (Truncated Signed Distance Field) maps
+# - Generates 2D costmaps for Nav2
+# - Runs efficiently on Jetson Orin (100 TOPS)
+#
+# This configuration is optimized for:
+# - Indoor warehouse navigation
+# - Intel RealSense D435 depth camera
+# - Real-time operation at 10Hz+
+#
+# Documentation:
+#   https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_nvblox/
+#
+# =============================================================================
+
+nvblox_node:
+  ros__parameters:
+    # ==========================================================================
+    # General Settings
+    # ==========================================================================
+    use_sim_time: True  # Set to False for real robot
+    
+    # Frame IDs
+    global_frame: "odom"
+    map_clearing_frame_id: "base_link"
+    
+    # ==========================================================================
+    # Voxel Grid Parameters
+    # ==========================================================================
+    # Voxel size affects resolution vs performance tradeoff
+    # Smaller = more detail but more GPU memory and slower
+    voxel_size: 0.05  # 5cm voxels (good balance for indoor navigation)
+    
+    # ==========================================================================
+    # TSDF (Truncated Signed Distance Field) Settings
+    # ==========================================================================
+    # TSDF integrates depth observations into a 3D distance field
+    
+    # Maximum distance to integrate (should match depth camera range)
+    max_tsdf_distance_for_occupancy: 10.0  # meters
+    
+    # TSDF truncation distance (typically 4-8x voxel size)
+    tsdf_truncation_distance_vox: 4.0
+    
+    # Weight for new observations (higher = faster adaptation)
+    max_weight: 100.0
+    
+    # ==========================================================================
+    # Depth Camera Settings
+    # ==========================================================================
+    # Configured for Intel RealSense D435
+    
+    # Input topics
+    depth_camera_topic: "/camera/depth/image_rect_raw"
+    depth_camera_info_topic: "/camera/depth/camera_info"
+    color_camera_topic: "/camera/color/image_raw"
+    color_camera_info_topic: "/camera/color/camera_info"
+    
+    # Depth preprocessing
+    max_input_depth: 8.0  # Ignore depth readings beyond 8m
+    min_input_depth: 0.1  # Ignore depth readings closer than 10cm
+    
+    # ==========================================================================
+    # Mesh and Visualization
+    # ==========================================================================
+    # Mesh output for visualization (can be disabled for performance)
+    output_mesh_topic: "/nvblox_mesh"
+    mesh_update_rate_hz: 2.0  # Lower = less GPU load
+    
+    # ==========================================================================
+    # 2D Costmap Output (for Nav2)
+    # ==========================================================================
+    # nvblox can directly output 2D costmaps for Nav2
+    
+    # Height slice for 2D projection
+    slice_height: 0.5  # Slice at 50cm (captures obstacles at robot height)
+    
+    # 2D map parameters
+    map_2d_topic: "/nvblox_costmap"
+    map_2d_update_rate_hz: 5.0  # 5Hz costmap updates
+    
+    # Inflation for safety margin
+    esdf_2d_band: 1.0  # ESDF band distance in meters
+    
+    # ==========================================================================
+    # Performance Tuning for Jetson Orin
+    # ==========================================================================
+    # These settings are optimized for the Jetson Orin NX 16GB
+    
+    # Integration rate (how often to process depth frames)
+    integration_rate_hz: 10.0  # 10Hz depth integration
+    
+    # Clear space settings (for dynamic environments)
+    clear_map_outside_radius: True
+    map_clearing_radius_m: 5.0  # Clear map beyond 5m from robot
+    
+    # GPU memory management
+    # Orin has 16GB unified memory, but leave room for other processes
+    # nvblox will use ~2-4GB depending on map size
+    
+    # ==========================================================================
+    # ESDF (Euclidean Signed Distance Field) for Planning
+    # ==========================================================================
+    # ESDF provides distance-to-obstacle information for planners
+    
+    esdf_update_rate_hz: 5.0
+    esdf_slice_height: 0.5  # Same as 2D slice height
+    esdf_2d_band: 2.0  # Distance band for ESDF
+    
+    # ==========================================================================
+    # Occupancy Grid Output
+    # ==========================================================================
+    # Alternative to costmap for some Nav2 configurations
+    
+    occupancy_grid_topic: "/nvblox_occupancy_grid"
+    publish_occupancy_grid: True
+    occupancy_grid_update_rate_hz: 2.0

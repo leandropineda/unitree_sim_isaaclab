@@ -15,13 +15,15 @@ import queue
 
 # add the project root directory to the path, so that the shared memory tool can be imported
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from tools.shared_memory_utils import MultiImageWriter
+from tools.shared_memory_utils import MultiImageWriter, DepthImageWriter
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 # create the global multi-image shared memory writer
 multi_image_writer = MultiImageWriter()
+# create depth image writer for navigation
+depth_image_writer = DepthImageWriter()
 
 def set_writer_options(enable_jpeg: bool = False, jpeg_quality: int = 85, skip_cvtcolor: bool = False):
     try:
@@ -105,34 +107,52 @@ def get_camera_image(
     
     # get the camera images
     images = {}
+    depth_image = None
     # env.sim.render()
     
 
     camera_keys = _camera_cache['camera_keys']
     # Head camera (front camera)
     if "front_camera" in camera_keys:
-        head_image = env.scene["front_camera"].data.output["rgb"][0]  # [batch, height, width, 3]
-
-        if head_image.device.type == 'cpu':
-            images["head"] = head_image.numpy()
-        else:
-            images["head"] = head_image.cpu().numpy()
+        camera_data = env.scene["front_camera"].data.output
+        
+        # Get RGB image
+        if "rgb" in camera_data:
+            head_image = camera_data["rgb"][0]  # [batch, height, width, 3]
+            if head_image.device.type == 'cpu':
+                images["head"] = head_image.numpy()
+            else:
+                images["head"] = head_image.cpu().numpy()
+        
+        # Get depth image for navigation (if available)
+        if "depth" in camera_data:
+            depth_tensor = camera_data["depth"][0]  # [batch, height, width, 1] or [batch, height, width]
+            if depth_tensor.dim() == 3:
+                depth_tensor = depth_tensor.squeeze(-1)  # Remove channel dim if present
+            if depth_tensor.device.type == 'cpu':
+                depth_image = depth_tensor.numpy().astype('float32')
+            else:
+                depth_image = depth_tensor.cpu().numpy().astype('float32')
     
     # Left camera (left wrist camera)
     if "left_wrist_camera" in camera_keys:
-        left_image = env.scene["left_wrist_camera"].data.output["rgb"][0]
-        if left_image.device.type == 'cpu':
-            images["left"] = left_image.numpy()
-        else:
-            images["left"] = left_image.cpu().numpy()
+        left_data = env.scene["left_wrist_camera"].data.output
+        if "rgb" in left_data:
+            left_image = left_data["rgb"][0]
+            if left_image.device.type == 'cpu':
+                images["left"] = left_image.numpy()
+            else:
+                images["left"] = left_image.cpu().numpy()
     
     # Right camera (right wrist camera)  
     if "right_wrist_camera" in camera_keys:
-        right_image = env.scene["right_wrist_camera"].data.output["rgb"][0]
-        if right_image.device.type == 'cpu':
-            images["right"] = right_image.numpy()
-        else:
-            images["right"] = right_image.cpu().numpy()
+        right_data = env.scene["right_wrist_camera"].data.output
+        if "rgb" in right_data:
+            right_image = right_data["rgb"][0]
+            if right_image.device.type == 'cpu':
+                images["right"] = right_image.numpy()
+            else:
+                images["right"] = right_image.cpu().numpy()
     
     # if no camera with the specified name is found, try other common camera names
     if not images:
@@ -168,6 +188,14 @@ def get_camera_image(
             _async_queue.put_nowait(images)
         except Exception:
             pass
+        
+        # Write depth image for navigation (separate from RGB queue)
+        if depth_image is not None:
+            try:
+                depth_image_writer.write_depth(depth_image)
+            except Exception as e:
+                pass  # Don't spam logs if depth writing fails
+                
     elif not images:
         print("[camera_state] No camera images found in the environment")
     

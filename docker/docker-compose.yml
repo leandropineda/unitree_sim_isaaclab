@@ -1,0 +1,205 @@
+# =============================================================================
+# Docker Compose for G1 Navigation (Simulation)
+# =============================================================================
+#
+# This docker-compose file orchestrates the complete navigation stack:
+# 1. Simulation container (Isaac Lab + G1 robot)
+# 2. Navigation container (ROS2 + Nav2 + DDS bridge)
+#
+# Usage:
+#   # Start both containers
+#   docker compose up
+#
+#   # Start in detached mode
+#   docker compose up -d
+#
+#   # View logs
+#   docker compose logs -f
+#
+#   # Stop
+#   docker compose down
+#
+# Requirements:
+# - Docker with NVIDIA Container Toolkit
+# - X11 for GUI (Isaac Sim visualization)
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Simulation Container (Isaac Lab)
+  # ===========================================================================
+  simulation:
+    image: unitree-sim:latest
+    container_name: g1-simulation
+    
+    # GPU access
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility, graphics, display]
+    
+    # Network: host mode for DDS communication
+    network_mode: host
+    
+    # IPC: host mode for shared memory between containers
+    ipc: host
+    
+    # Environment
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics,display
+      - VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd.json
+      # Accept NVIDIA Omniverse EULA (unattended)
+      - ACCEPT_EULA=Y
+      - PRIVACY_CONSENT=Y
+      # DDS domain (must match navigation container)
+      - ROS_DOMAIN_ID=0
+    
+    # Volumes
+    volumes:
+      # X11 socket for GUI
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Vulkan ICD
+      - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro
+      - /usr/share/vulkan/icd.d:/usr/share/vulkan/icd.d:ro
+      # Mount local source code for development (includes new navigation task)
+      - ..:/home/code/unitree_sim_isaaclab
+      # Persistent data (maps, logs)
+      - ./data:/home/code/unitree_sim_isaaclab/data
+      # Assets (optional - mount local assets)
+      # - ./assets:/home/code/unitree_sim_isaaclab/assets
+    
+    # Working directory
+    working_dir: /home/code/unitree_sim_isaaclab
+    
+    # Start navigation task (fetch assets + install teleimager if needed)
+    command: >-
+      bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate unitree_sim_env && 
+      pip install -e teleimager[server] --ignore-requires-python -q 2>/dev/null || true &&
+      if [ ! -d 'assets/objects/small_warehouse' ]; then
+        echo '=== Fetching assets (first run, ~1GB download) ===' &&
+        bash fetch_assets.sh;
+      fi &&
+      python sim_main.py --task Isaac-Navigation-G129-Wholebody --robot_type g129 --enable_wholebody_dds --enable_inspire_dds --enable_cameras --render_interval 10"
+    
+    # Keep running for interactive use
+    stdin_open: true
+    tty: true
+
+  # ===========================================================================
+  # Navigation Container (ROS2 + Nav2)
+  # ===========================================================================
+  navigation:
+    image: g1-navigation:x86
+    container_name: g1-navigation
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.navigation.x86
+    
+    # GPU access (for Isaac ROS if available)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility]
+    
+    # Network: host mode for DDS communication with simulation
+    network_mode: host
+    
+    # IPC: host mode for shared memory between containers
+    ipc: host
+    
+    # Environment
+    environment:
+      - DISPLAY=${DISPLAY}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+      # For RViz
+      - QT_X11_NO_MITSHM=1
+    
+    # Volumes
+    volumes:
+      # X11 socket for RViz
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Navigation source code (for development - use local code instead of baked-in)
+      - ../navigation:/ros2_ws/src/g1_navigation/navigation:ro
+      # Tools for shared memory utils (camera bridge)
+      - ../tools:/ros2_ws/src/g1_navigation/tools:ro
+      # Saved maps
+      - ./maps:/ros2_ws/maps
+    
+    # Wait for simulation to start
+    depends_on:
+      - simulation
+    
+    # Start DDS-ROS2 bridge + Camera bridge
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Waiting for simulation to start...' &&
+        sleep 5 &&
+        echo 'Starting camera bridge in background...' &&
+        python3 -m navigation.sim_camera_ros2_bridge &
+        echo 'Starting DDS-ROS2 bridge...' &&
+        python3 -m navigation.dds_ros2_bridge
+      "
+    
+    stdin_open: true
+    tty: true
+
+  # ===========================================================================
+  # RViz Container (Visualization)
+  # ===========================================================================
+  rviz:
+    image: g1-navigation:x86
+    container_name: g1-rviz
+    
+    # GPU access for RViz rendering
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, compute, utility, graphics]
+    
+    network_mode: host
+    
+    environment:
+      - DISPLAY=${DISPLAY}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./maps:/ros2_ws/maps
+    
+    depends_on:
+      - navigation
+    
+    # Note: If RViz crashes with libGL errors, run on host: xhost +local:docker
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        sleep 10 &&
+        echo 'Starting RViz...' &&
+        echo 'If it crashes, run on host: xhost +local:docker' &&
+        ros2 run rviz2 rviz2
+      "
+    
+    stdin_open: true
+    tty: true
+    
+    # This service is optional
+    profiles:
+      - viz
